@@ -26,3 +26,13 @@ jobs:
           BB_SECRET: ${{ secrets.BB_SECRET }}
           BB_ACCESS: ${{ secrets.BB_ACCESS }}
         run: bun .\cmd\ci-build.ts
+
+      - name: Upload Windows EXE artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sumatrapdf-exe-${{ github.sha }}
+          path: |
+            out/rel32/*.exe
+            out/rel64/*.exe
+            out/arm64/*.exe
+          if-no-files-found: error

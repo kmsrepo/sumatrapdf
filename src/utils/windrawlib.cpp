@@ -219,6 +219,79 @@ IWICBitmapSource* wic_convert_bitmap(IWICBitmapSource* bitmap) {
     return (IWICBitmapSource*)converter;
 }
 
+bool d2d_blt_hbitmap(HBITMAP hbmp, HDC hdc, int xDst, int yDst, int dxDst, int dyDst, int xSrc, int ySrc, int dxSrc,
+                     int dySrc) {
+    if (!hbmp || !hdc || dxDst <= 0 || dyDst <= 0 || dxSrc <= 0 || dySrc <= 0) {
+        return false;
+    }
+    if (!d2d_enabled() && d2d_init() != 0) {
+        return false;
+    }
+    if (!wic_factory && wic_init() != 0) {
+        return false;
+    }
+
+    IWICBitmap* sourceBitmap = nullptr;
+    IWICBitmapSource* converted = nullptr;
+    ID2D1DCRenderTarget* dcTarget = nullptr;
+    ID2D1Bitmap* d2dBitmap = nullptr;
+    HRESULT hr = wic_factory->CreateBitmapFromHBITMAP(hbmp, nullptr, WICBitmapUseAlpha, &sourceBitmap);
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    converted = wic_convert_bitmap(sourceBitmap);
+    if (!converted) {
+        sourceBitmap->Release();
+        return false;
+    }
+
+    D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_HARDWARE, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f,
+        96.0f);
+    hr = d2d_factory->CreateDCRenderTarget(&props, &dcTarget);
+    if (FAILED(hr)) {
+        converted->Release();
+        sourceBitmap->Release();
+        return false;
+    }
+
+    RECT dst = {xDst, yDst, xDst + dxDst, yDst + dyDst};
+    hr = dcTarget->BindDC(hdc, &dst);
+    if (FAILED(hr)) {
+        goto Exit;
+    }
+
+    hr = dcTarget->CreateBitmapFromWicBitmap(converted, nullptr, &d2dBitmap);
+    if (FAILED(hr)) {
+        goto Exit;
+    }
+
+    D2D1_RECT_F dstRect = D2D1::RectF(0.f, 0.f, (float)dxDst, (float)dyDst);
+    D2D1_RECT_F srcRect = D2D1::RectF((float)xSrc, (float)ySrc, (float)(xSrc + dxSrc), (float)(ySrc + dySrc));
+    dcTarget->BeginDraw();
+    dcTarget->DrawBitmap(d2dBitmap, &dstRect, 1.f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &srcRect);
+    hr = dcTarget->EndDraw();
+    if (FAILED(hr)) {
+        goto Exit;
+    }
+
+Exit:
+    if (d2dBitmap) {
+        d2dBitmap->Release();
+    }
+    if (dcTarget) {
+        dcTarget->UnbindDC();
+        dcTarget->Release();
+    }
+    if (converted) {
+        converted->Release();
+    }
+    sourceBitmap->Release();
+
+    return SUCCEEDED(hr);
+}
+
 static int wd_init_core_api(void) {
     if (d2d_init() == 0) {
         return 0;

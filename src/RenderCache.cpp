@@ -5,6 +5,7 @@
 #include "utils/ScopedWin.h"
 #include "utils/WinUtil.h"
 #include "utils/Timer.h"
+#include "utils/windrawlib.h"
 
 #include "wingui/UIModels.h"
 
@@ -36,6 +37,7 @@ bool gConserveMemory = false;
 static DWORD WINAPI RenderCacheThread(LPVOID data);
 
 bool gShowTileLayout = false;
+static const bool kUseD2DGpuBlit = true;
 
 RenderCache::RenderCache() : maxTileSize({GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)}) {
     // enable when debugging RenderCache logic
@@ -762,37 +764,47 @@ int RenderCache::PaintTile(HDC hdc, Rect bounds, DisplayModel* dm, int pageNo, T
         return renderDelay;
     }
 
-    HDC bmpDC = CreateCompatibleDC(hdc);
-    if (bmpDC) {
-        Size bmpSize = renderedBmp->GetSize();
-        int xSrc = -std::min(tileOnScreen.x, 0);
-        int ySrc = -std::min(tileOnScreen.y, 0);
-        float factor = std::min(1.0f * bmpSize.dx / tileOnScreen.dx, 1.0f * bmpSize.dy / tileOnScreen.dy);
+    bool painted = false;
+    Size bmpSize = renderedBmp->GetSize();
+    int xSrc = -std::min(tileOnScreen.x, 0);
+    int ySrc = -std::min(tileOnScreen.y, 0);
+    float factor = std::min(1.0f * bmpSize.dx / tileOnScreen.dx, 1.0f * bmpSize.dy / tileOnScreen.dy);
 
-        HGDIOBJ prevBmp = SelectObject(bmpDC, hbmp);
-        int xDst = bounds.x;
-        int yDst = bounds.y;
-        int dxDst = bounds.dx;
-        int dyDst = bounds.dy;
-        if (factor != 1.0f) {
-            xSrc = (int)(xSrc * factor);
-            ySrc = (int)(ySrc * factor);
-            int dxSrc = (int)(bounds.dx * factor);
-            int dySrc = (int)(bounds.dy * factor);
-            StretchBlt(hdc, xDst, yDst, dxDst, dyDst, bmpDC, xSrc, ySrc, dxSrc, dySrc, SRCCOPY);
-        } else {
-            BitBlt(hdc, xDst, yDst, dxDst, dyDst, bmpDC, xSrc, ySrc, SRCCOPY);
+    int xDst = bounds.x;
+    int yDst = bounds.y;
+    int dxDst = bounds.dx;
+    int dyDst = bounds.dy;
+    int dxSrc = dxDst;
+    int dySrc = dyDst;
+    if (factor != 1.0f) {
+        xSrc = (int)(xSrc * factor);
+        ySrc = (int)(ySrc * factor);
+        dxSrc = (int)(bounds.dx * factor);
+        dySrc = (int)(bounds.dy * factor);
+    }
+
+    if (kUseD2DGpuBlit && d2d_blt_hbitmap(hbmp, hdc, xDst, yDst, dxDst, dyDst, xSrc, ySrc, dxSrc, dySrc)) {
+        painted = true;
+    } else {
+        HDC bmpDC = CreateCompatibleDC(hdc);
+        if (bmpDC) {
+            HGDIOBJ prevBmp = SelectObject(bmpDC, hbmp);
+            if (factor != 1.0f) {
+                StretchBlt(hdc, xDst, yDst, dxDst, dyDst, bmpDC, xSrc, ySrc, dxSrc, dySrc, SRCCOPY);
+            } else {
+                BitBlt(hdc, xDst, yDst, dxDst, dyDst, bmpDC, xSrc, ySrc, SRCCOPY);
+            }
+
+            SelectObject(bmpDC, prevBmp);
+            DeleteDC(bmpDC);
+            painted = true;
         }
-
-        SelectObject(bmpDC, prevBmp);
-        DeleteDC(bmpDC);
-
-        if (gShowTileLayout) {
-            HPEN pen = CreatePen(PS_SOLID, 1, RGB(0xff, 0xff, 0x00));
-            HGDIOBJ oldPen = SelectObject(hdc, pen);
-            DrawRect(hdc, bounds);
-            DeletePen(SelectObject(hdc, oldPen));
-        }
+    }
+    if (painted && gShowTileLayout) {
+        HPEN pen = CreatePen(PS_SOLID, 1, RGB(0xff, 0xff, 0x00));
+        HGDIOBJ oldPen = SelectObject(hdc, pen);
+        DrawRect(hdc, bounds);
+        DeletePen(SelectObject(hdc, oldPen));
     }
 
     if (entry->outOfDate) {

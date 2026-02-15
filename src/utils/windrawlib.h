@@ -114,6 +114,8 @@ void d2d_reset_clip(d2d_canvas_t* c);
 void d2d_apply_transform(d2d_canvas_t* c, const D2D1_MATRIX_3X2_F* matrix);
 
 IWICBitmapSource* wic_convert_bitmap(IWICBitmapSource* bitmap);
+bool d2d_blt_hbitmap(HBITMAP hbmp, HDC hdc, int xDst, int yDst, int dxDst, int dyDst, int xSrc, int ySrc, int dxSrc,
+                     int dySrc);
 
 void dwrite_default_user_locale(WCHAR buffer[LOCALE_NAME_MAX_LENGTH]);
 
