@@ -76,6 +76,7 @@ typedef struct ID2D1HwndRenderTarget ID2D1HwndRenderTarget;
 typedef struct ID2D1GdiInteropRenderTarget ID2D1GdiInteropRenderTarget;
 typedef struct ID2D1Layer ID2D1Layer;
 typedef struct D2D1_MATRIX_3X2_F D2D1_MATRIX_3X2_F;
+typedef struct D2D1_COLOR_F D2D1_COLOR_F;
 typedef struct IWICBitmapSource IWICBitmapSource;
 
 /*******************************
