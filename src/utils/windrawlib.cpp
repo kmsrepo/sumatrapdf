@@ -73,14 +73,14 @@ void d2d_fini(void) {
     }
 }
 
-void d2d_init_color(D2D1_COLOR_F* c, WD_COLOR color) {
+static void d2d_init_color(D2D1_COLOR_F* c, WD_COLOR color) {
     c->r = WD_RVALUE(color) / 255.0f;
     c->g = WD_GVALUE(color) / 255.0f;
     c->b = WD_BVALUE(color) / 255.0f;
     c->a = WD_AVALUE(color) / 255.0f;
 }
 
-void d2d_matrix_mult(D2D1_MATRIX_3X2_F* res, const D2D1_MATRIX_3X2_F* a, const D2D1_MATRIX_3X2_F* b) {
+static void d2d_matrix_mult(D2D1_MATRIX_3X2_F* res, const D2D1_MATRIX_3X2_F* a, const D2D1_MATRIX_3X2_F* b) {
     res->_11 = a->_11 * b->_11 + a->_12 * b->_21;
     res->_12 = a->_11 * b->_12 + a->_12 * b->_22;
     res->_21 = a->_21 * b->_11 + a->_22 * b->_21;
@@ -123,7 +123,7 @@ void d2d_reset_clip(d2d_canvas_t* c) {
     }
 }
 
-void d2d_apply_transform(d2d_canvas_t* c, const D2D1_MATRIX_3X2_F* matrix) {
+static void d2d_apply_transform(d2d_canvas_t* c, const D2D1_MATRIX_3X2_F* matrix) {
     D2D1_MATRIX_3X2_F res;
     D2D1_MATRIX_3X2_F old_matrix;
 
@@ -281,7 +281,6 @@ Exit:
         d2dBitmap->Release();
     }
     if (dcTarget) {
-        dcTarget->ReleaseDC(NULL);
         dcTarget->Release();
     }
     if (converted) {
