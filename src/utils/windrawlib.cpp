@@ -281,7 +281,7 @@ Exit:
         d2dBitmap->Release();
     }
     if (dcTarget) {
-        dcTarget->UnbindDC();
+        dcTarget->ReleaseDC(NULL);
         dcTarget->Release();
     }
     if (converted) {

@@ -75,8 +75,8 @@ typedef struct ID2D1BitmapRenderTarget ID2D1BitmapRenderTarget;
 typedef struct ID2D1HwndRenderTarget ID2D1HwndRenderTarget;
 typedef struct ID2D1GdiInteropRenderTarget ID2D1GdiInteropRenderTarget;
 typedef struct ID2D1Layer ID2D1Layer;
-typedef struct D2D1_MATRIX_3X2_F D2D1_MATRIX_3X2_F;
-typedef struct D2D1_COLOR_F D2D1_COLOR_F;
+struct D2D1_MATRIX_3X2_F;
+struct D2D1_COLOR_F;
 typedef struct IWICBitmapSource IWICBitmapSource;
 
 /*******************************
@@ -116,13 +116,13 @@ struct d2d_canvas_t {
 
 int d2d_init(void);
 void d2d_fini(void);
-void d2d_init_color(D2D1_COLOR_F* c, WD_COLOR color);
-void d2d_matrix_mult(D2D1_MATRIX_3X2_F* res, const D2D1_MATRIX_3X2_F* a, const D2D1_MATRIX_3X2_F* b);
+void d2d_init_color(struct D2D1_COLOR_F* c, WD_COLOR color);
+void d2d_matrix_mult(struct D2D1_MATRIX_3X2_F* res, const struct D2D1_MATRIX_3X2_F* a, const struct D2D1_MATRIX_3X2_F* b);
 
 d2d_canvas_t* d2d_canvas_alloc(ID2D1RenderTarget* target, WORD type, UINT width, BOOL rtl);
 void d2d_reset_transform(d2d_canvas_t* c);
 void d2d_reset_clip(d2d_canvas_t* c);
-void d2d_apply_transform(d2d_canvas_t* c, const D2D1_MATRIX_3X2_F* matrix);
+void d2d_apply_transform(d2d_canvas_t* c, const struct D2D1_MATRIX_3X2_F* matrix);
 
 IWICBitmapSource* wic_convert_bitmap(IWICBitmapSource* bitmap);
 bool d2d_blt_hbitmap(HBITMAP hbmp, HDC hdc, int xDst, int yDst, int dxDst, int dyDst, int xSrc, int ySrc, int dxSrc,
