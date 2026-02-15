@@ -136,6 +136,7 @@ function getGitHubEventType(): string {
   const path = process.env["GITHUB_EVENT_PATH"] ?? "";
   const d = JSON.parse(readFileSync(path, "utf-8"));
   if (d.action === "codeql") return "codeql";
+  if (d.action === "build-pre-rel") return "build-pre-rel";
   throw new Error(`invalid GitHub event action: '${d.action}'`);
 }
 
@@ -423,6 +424,7 @@ async function main() {
 
   switch (eventType) {
     case "push":
+    case "build-pre-rel":
       removeReleaseBuilds();
       // generate HTML docs
       {
