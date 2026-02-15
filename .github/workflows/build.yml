@@ -31,7 +31,5 @@ jobs:
         with:
           name: sumatrapdf-exe-${{ github.sha }}
           path: |
-            out/rel32/*.exe
             out/rel64/*.exe
-            out/arm64/*.exe
           if-no-files-found: error
