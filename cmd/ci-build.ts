@@ -273,9 +273,14 @@ async function buildPreRelease(preRelVer: string, sha1: string, vsplatform: stri
       await runLogged(testUtil, [], outDir);
     }
 
-    // build all targets
-    const targets = ["PdfFilter", "plugin-test", "PdfPreview", "PdfPreviewTest", "SumatraPDF", "SumatraPDF-dll"];
-    const t = `/t:${targets.map((t) => t + ":Rebuild").join(";")}`;
+    // build core rendering targets first so rendering/type errors show up sooner
+    const coreTargets = ["SumatraPDF", "SumatraPDF-dll"];
+    const core = `/t:${coreTargets.map((t) => `${t}:Rebuild`).join(";")}`;
+    await runLogged(msbuildPath, [slnPath, core, p, `/m`]);
+
+    // build remaining targets
+    const targets = ["PdfFilter", "plugin-test", "PdfPreview", "PdfPreviewTest"];
+    const t = `/t:${targets.map((t) => `${t}:Rebuild`).join(";")}`;
     await runLogged(msbuildPath, [slnPath, t, p, `/m`]);
 
     // create PDB archives
