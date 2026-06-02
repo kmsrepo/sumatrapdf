@@ -23,6 +23,7 @@ const CXX = "x86_64-w64-mingw32-g++";
 const AR = "x86_64-w64-mingw32-ar";
 const WINDRES = "x86_64-w64-mingw32-windres";
 const OBJCOPY = "x86_64-w64-mingw32-objcopy";
+const DLLTOOL = "x86_64-w64-mingw32-dlltool";
 const JOBS = Math.max(1, cpus().length);
 
 // ── Common defines (workspace-level from premake5.lua) ─────────────────────
@@ -152,6 +153,29 @@ async function createArchive(archivePath: string, objFiles: string[]): Promise<v
   }
 }
 
+function crc32(data: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of data) {
+    crc ^= byte;
+    for (let i = 0; i < 8; i++) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+async function writeEmptySimpleArchive(archivePath: string): Promise<void> {
+  mkdirSync(dirname(archivePath), { recursive: true });
+  const header = new Uint8Array(8);
+  const view = new DataView(header.buffer);
+  view.setUint32(0, 0x41537a4c, true);
+  view.setUint32(4, 0, true);
+  const data = new Uint8Array(12);
+  data.set(header, 0);
+  new DataView(data.buffer).setUint32(8, crc32(header), true);
+  await writeFile(archivePath, data);
+}
+
 /** Convert a binary file to a .o with a specific symbol using objcopy.
  *  Produces symbols: _binary_<symbolPrefix>, _binary_<symbolPrefix>_size
  *  matching what mupdf's noto.c expects (non-HAVE_OBJCOPY path). */
@@ -191,6 +215,156 @@ async function embedBinaryFile(
   }
   // cleanup temp file
   try { await Bun.write(tmpInput, ""); } catch {}
+}
+
+function mingwCompatIncludeDir(outDir: string): string {
+  return join(outDir, "mingw-compat-include");
+}
+
+async function writeMingwCompatHeaders(outDir: string): Promise<void> {
+  const includeDir = mingwCompatIncludeDir(outDir);
+  mkdirSync(includeDir, { recursive: true });
+
+  // Some upstream Windows sources use MSVC SDK header casing. MinGW headers on
+  // Linux are case-sensitive, so provide small forwarding shims.
+  const headerShims = [
+    "ObjBase.h",
+    "OleAcc.h",
+    "PowrProf.h",
+    "SDKDDKVer.h",
+    "Sddl.h",
+    "Shlwapi.h",
+    "Thumbcache.h",
+    "UIAutomationCore.h",
+    "UIAutomationCoreApi.h",
+    "Unknwn.h",
+    "Uxtheme.h",
+    "Wbemidl.h",
+    "WinCrypt.h",
+    "WinNls.h",
+    "Windows.h",
+  ];
+  for (const header of headerShims) {
+    await writeFile(join(includeDir, header), `#include <${header.toLowerCase()}>\n`);
+  }
+  await writeFile(
+    join(includeDir, "Windows.h"),
+    `#include <windows.h>
+#ifndef SetThreadDescription
+#ifdef __cplusplus
+extern "C" WINBASEAPI HRESULT WINAPI SetThreadDescription(HANDLE hThread, PCWSTR lpThreadDescription);
+#else
+WINBASEAPI HRESULT WINAPI SetThreadDescription(HANDLE hThread, PCWSTR lpThreadDescription);
+#endif
+#endif
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWA_CAPTION_COLOR
+#define DWMWA_CAPTION_COLOR 35
+#endif
+#ifndef DWMWA_TEXT_COLOR
+#define DWMWA_TEXT_COLOR 36
+#endif
+#ifndef DWMWA_SYSTEMBACKDROP_TYPE
+#define DWMWA_SYSTEMBACKDROP_TYPE 38
+#endif
+#ifndef DWMWA_COLOR_DEFAULT
+#define DWMWA_COLOR_DEFAULT 0xFFFFFFFF
+#endif
+#ifndef DWMWA_COLOR_NONE
+#define DWMWA_COLOR_NONE 0xFFFFFFFE
+#endif
+#ifndef DWMWCP_DONOTROUND
+#define DWMWCP_DONOTROUND 1
+#endif
+#ifndef DWMWCP_ROUND
+#define DWMWCP_ROUND 2
+#endif
+`,
+  );
+  await writeFile(join(includeDir, "theme.h"), '#include "Theme.h"\n');
+  await writeFile(join(includeDir, "SumatraPdf.h"), '#include "SumatraPDF.h"\n');
+  await writeFile(join(includeDir, "webview2.h"), '#include "WebView2.h"\n');
+  await writeFile(
+    join(includeDir, "EventToken.h"),
+    `#pragma once
+typedef struct EventRegistrationToken {
+  __int64 value;
+} EventRegistrationToken;
+`,
+  );
+  await writeFile(
+    join(includeDir, "MinGWCompat.h"),
+    `#pragma once
+#if defined(__MINGW32__) && !defined(SUMATRA_MINGW_COMPAT_TYPES)
+#define SUMATRA_MINGW_COMPAT_TYPES
+typedef unsigned int gid_t;
+typedef unsigned int uid_t;
+typedef int id_t;
+#endif
+#if defined(__MINGW32__) && !defined(DWMWCP_DEFAULT)
+typedef enum DWM_WINDOW_CORNER_PREFERENCE {
+  DWMWCP_DEFAULT = 0,
+  DWMWCP_DONOTROUND = 1,
+  DWMWCP_ROUND = 2,
+  DWMWCP_ROUNDSMALL = 3,
+} DWM_WINDOW_CORNER_PREFERENCE;
+#endif
+#if defined(__MINGW32__) && !defined(DWMSBT_AUTO)
+typedef enum DWM_SYSTEMBACKDROP_TYPE {
+  DWMSBT_AUTO = 0,
+  DWMSBT_NONE = 1,
+  DWMSBT_MAINWINDOW = 2,
+  DWMSBT_TRANSIENTWINDOW = 3,
+  DWMSBT_TABBEDWINDOW = 4,
+} DWM_SYSTEMBACKDROP_TYPE;
+#endif
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWA_CAPTION_COLOR
+#define DWMWA_CAPTION_COLOR 35
+#endif
+#ifndef DWMWA_TEXT_COLOR
+#define DWMWA_TEXT_COLOR 36
+#endif
+#ifndef DWMWA_SYSTEMBACKDROP_TYPE
+#define DWMWA_SYSTEMBACKDROP_TYPE 38
+#endif
+#ifndef DWMWA_COLOR_DEFAULT
+#define DWMWA_COLOR_DEFAULT 0xFFFFFFFF
+#endif
+#ifndef DWMWA_COLOR_NONE
+#define DWMWA_COLOR_NONE 0xFFFFFFFE
+#endif
+#ifndef PropertyTagExifWhiteBalance
+#define PropertyTagExifWhiteBalance 0xA403
+#endif
+#ifndef PropertyTagExifFocalLengthIn35mmFilm
+#define PropertyTagExifFocalLengthIn35mmFilm 0xA405
+#endif
+`,
+  );
+  await writeFile(
+    join(includeDir, "MinGWAppCompat.h"),
+    `#pragma once
+#include "MinGWCompat.h"
+#include "Windows.h"
+`,
+  );
 }
 
 // ── Library definitions ─────────────────────────────────────────────────────
@@ -377,6 +551,163 @@ const chm: LibDef = {
   defines: ["_CRT_SECURE_NO_WARNINGS"],
   includes: [],
   files: [{ dir: "ext/CHMLib", patterns: ["chm_lib.c", "lzx.c"] }],
+};
+
+const libarchive: LibDef = {
+  name: "libarchive",
+  alwaysOptimize: true,
+  defines: [
+    "_CRT_SECURE_NO_WARNINGS",
+    "LIBARCHIVE_STATIC",
+    'PLATFORM_CONFIG_H="config_windows.h"',
+    "BZ_NO_STDIO",
+    "HAVE_CONFIG_H",
+    "LZMA_API_STATIC",
+  ],
+  includes: [
+    "ext/libarchive/libarchive",
+    "ext/bzip2",
+    "ext/lzma/C",
+    "ext/liblzma/api",
+    "ext/liblzma/common",
+    "ext/liblzma/check",
+    "ext/liblzma/delta",
+    "ext/liblzma/lz",
+    "ext/liblzma/lzma",
+    "ext/liblzma/rangecoder",
+    "ext/liblzma/simple",
+    "ext/liblzma",
+    "ext/zlib",
+  ],
+  files: [
+    {
+      dir: "ext/libarchive/libarchive",
+      patterns: [
+        "archive_acl.c",
+        "archive_check_magic.c",
+        "archive_cmdline.c",
+        "archive_cryptor.c",
+        "archive_digest.c",
+        "archive_entry.c",
+        "archive_entry_copy_bhfi.c",
+        "archive_entry_copy_stat.c",
+        "archive_entry_link_resolver.c",
+        "archive_entry_sparse.c",
+        "archive_entry_stat.c",
+        "archive_entry_strmode.c",
+        "archive_entry_xattr.c",
+        "archive_hmac.c",
+        "archive_match.c",
+        "archive_options.c",
+        "archive_pack_dev.c",
+        "archive_pathmatch.c",
+        "archive_ppmd7.c",
+        "archive_ppmd8.c",
+        "archive_random.c",
+        "archive_rb.c",
+        "archive_string.c",
+        "archive_string_sprintf.c",
+        "archive_time.c",
+        "archive_util.c",
+        "archive_version_details.c",
+        "archive_virtual.c",
+        "archive_windows.c",
+        "archive_blake2s_ref.c",
+        "archive_blake2sp_ref.c",
+        "archive_read.c",
+        "archive_read_add_passphrase.c",
+        "archive_read_append_filter.c",
+        "archive_read_data_into_fd.c",
+        "archive_read_extract.c",
+        "archive_read_extract2.c",
+        "archive_read_open_fd.c",
+        "archive_read_open_file.c",
+        "archive_read_open_filename.c",
+        "archive_read_open_memory.c",
+        "archive_read_set_format.c",
+        "archive_read_set_options.c",
+        "archive_read_support_filter_all.c",
+        "archive_read_support_filter_by_code.c",
+        "archive_read_support_filter_bzip2.c",
+        "archive_read_support_filter_compress.c",
+        "archive_read_support_filter_grzip.c",
+        "archive_read_support_filter_gzip.c",
+        "archive_read_support_filter_lrzip.c",
+        "archive_read_support_filter_lz4.c",
+        "archive_read_support_filter_lzop.c",
+        "archive_read_support_filter_none.c",
+        "archive_read_support_filter_program.c",
+        "archive_read_support_filter_rpm.c",
+        "archive_read_support_filter_uu.c",
+        "archive_read_support_filter_xz.c",
+        "archive_read_support_filter_zstd.c",
+        "archive_read_support_format_7zip.c",
+        "archive_read_support_format_all.c",
+        "archive_read_support_format_ar.c",
+        "archive_read_support_format_by_code.c",
+        "archive_read_support_format_cab.c",
+        "archive_read_support_format_cpio.c",
+        "archive_read_support_format_empty.c",
+        "archive_read_support_format_iso9660.c",
+        "archive_read_support_format_lha.c",
+        "archive_read_support_format_mtree.c",
+        "archive_read_support_format_rar.c",
+        "archive_read_support_format_rar5.c",
+        "archive_read_support_format_raw.c",
+        "archive_read_support_format_tar.c",
+        "archive_read_support_format_warc.c",
+        "archive_read_support_format_xar.c",
+        "archive_read_support_format_zip.c",
+        "xxhash.c",
+        "archive_read_disk_set_standard_lookup.c",
+        "archive_read_disk_windows.c",
+        "archive_parse_date.c",
+        "filter_fork_windows.c",
+      ],
+    },
+    {
+      dir: "ext/bzip2",
+      patterns: [
+        "blocksort.c",
+        "bzlib.c",
+        "bz_internal_error.c",
+        "compress.c",
+        "crctable.c",
+        "decompress.c",
+        "huffman.c",
+        "randtable.c",
+      ],
+    },
+    { dir: "ext/lzma/C", patterns: ["LzmaDec.c", "Bra86.c", "Bra.c"] },
+    {
+      dir: "ext/liblzma/common",
+      patterns: [
+        "alone_decoder.c",
+        "auto_decoder.c",
+        "block_decoder.c",
+        "block_header_decoder.c",
+        "block_util.c",
+        "common.c",
+        "filter_common.c",
+        "filter_decoder.c",
+        "filter_flags_decoder.c",
+        "index.c",
+        "index_decoder.c",
+        "index_hash.c",
+        "stream_decoder.c",
+        "stream_flags_common.c",
+        "stream_flags_decoder.c",
+        "vli_decoder.c",
+        "vli_size.c",
+      ],
+    },
+    { dir: "ext/liblzma/check", patterns: ["check.c", "crc32_fast.c", "crc64_fast.c"] },
+    { dir: "ext/liblzma/lz", patterns: ["lz_decoder.c"] },
+    { dir: "ext/liblzma/lzma", patterns: ["lzma_decoder.c", "lzma2_decoder.c"] },
+    { dir: "ext/liblzma/rangecoder", patterns: ["price_table.c"] },
+    { dir: "ext/liblzma/delta", patterns: ["delta_common.c", "delta_decoder.c"] },
+    { dir: "ext/liblzma/simple", patterns: ["simple_coder.c", "simple_decoder.c", "x86.c"] },
+  ],
 };
 
 const unarrlib: LibDef = {
@@ -815,6 +1146,7 @@ const mupdfLibs: LibDef = {
       dir: "ext/freetype/src",
       patterns: [
         "cff/cff.c",
+        "gzip/ftgzip.c",
         "psaux/psaux.c",
         "pshinter/pshinter.c",
         "psnames/psnames.c",
@@ -1051,6 +1383,7 @@ const mupdf: LibDef = {
         "memento.c",
         "memory.c",
         "noto.c",
+        "ocr-device.c",
         "outline.c",
         "output.c",
         "output-cbz.c",
@@ -1080,6 +1413,7 @@ const mupdf: LibDef = {
         "stext-iterator.c",
         "stext-output.c",
         "stext-para.c",
+        "stext-raft.c",
         "stext-search.c",
         "stext-table.c",
         "store.c",
@@ -1106,6 +1440,7 @@ const mupdf: LibDef = {
         "util.c",
         "writer.c",
         "xml-write.c",
+        "xmltext-device.c",
         "xml.c",
         "zip.c",
       ],
@@ -1161,6 +1496,7 @@ const mupdf: LibDef = {
         "pdf-nametree.c",
         "pdf-object.c",
         "pdf-op-buffer.c",
+        "pdf-op-color.c",
         "pdf-op-filter.c",
         "pdf-op-run.c",
         "pdf-op-vectorize.c",
@@ -1173,6 +1509,7 @@ const mupdf: LibDef = {
         "pdf-resources.c",
         "pdf-run.c",
         "pdf-shade.c",
+        "pdf-shade-recolor.c",
         "pdf-signature.c",
         "pdf-store.c",
         "pdf-stream.c",
@@ -1189,6 +1526,30 @@ const mupdf: LibDef = {
     {
       dir: "mupdf/source/svg",
       patterns: ["svg-color.c", "svg-doc.c", "svg-parse.c", "svg-run.c"],
+    },
+    { dir: "mupdf/source/helpers/pkcs7", patterns: ["pkcs7-windows.c"] },
+    {
+      dir: "mupdf/source/tools",
+      patterns: [
+        "muconvert.c",
+        "mudraw.c",
+        "mugrep.c",
+        "murun.c",
+        "mutrace.c",
+        "pdfaudit.c",
+        "pdfbake.c",
+        "pdfclean.c",
+        "pdfcreate.c",
+        "pdfextract.c",
+        "pdfinfo.c",
+        "pdfmerge.c",
+        "pdfpages.c",
+        "pdfposter.c",
+        "pdfrecolor.c",
+        "pdfshow.c",
+        "pdfsign.c",
+        "pdftrim.c",
+      ],
     },
     {
       dir: "mupdf/source/xps",
@@ -1208,6 +1569,7 @@ const mupdf: LibDef = {
       ],
     },
     { dir: "mupdf/source/reflow", patterns: ["*.c"] },
+    { dir: "mupdf/source/helpers/mu-threads", patterns: ["mu-threads.c"] },
   ],
 };
 
@@ -1215,7 +1577,7 @@ const mupdf: LibDef = {
 const utils: LibDef = {
   name: "utils",
   alwaysOptimize: false,
-  defines: ["LIBHEIF_STATIC_BUILD"],
+  defines: ["LIBHEIF_STATIC_BUILD", "UNICODE", "_UNICODE"],
   includes: [
     "src",
     "ext/lzma/C",
@@ -1223,6 +1585,7 @@ const utils: LibDef = {
     "ext/libwebp/src",
     "ext/dav1d/include",
     "ext/unarr",
+    "ext/libarchive",
     "mupdf/include",
     "ext/zlib",
   ],
@@ -1277,6 +1640,17 @@ const utils: LibDef = {
         "WinDynCalls.*",
         "WinUtil.*",
         "ZipUtil.*",
+      ],
+    },
+    {
+      dir: "src/common",
+      patterns: [
+        "arena.cpp",
+        "base.cpp",
+        "dir_scan.cpp",
+        "file_util.cpp",
+        "str_util.cpp",
+        "win_util.cpp",
       ],
     },
   ],
@@ -1341,6 +1715,7 @@ const sumatraFiles: FileGroup[] = [
       "EnginePs.*",
       "EbookDoc.*",
       "EbookFormatter.*",
+      "GumboHelpers.*",
       "HtmlFormatter.*",
       "MobiDoc.*",
       "PdfCreator.*",
@@ -1374,12 +1749,15 @@ const sumatraFiles: FileGroup[] = [
       "FzImgReader.*",
       "GlobalPrefs.*",
       "HomePage.*",
+      "ImageSaveCropResize.*",
       "Installer.*",
       "InstallerCommon.cpp",
       "MainWindow.*",
       "Menu.*",
       "Notifications.*",
+      "OverlayScrollbar.*",
       "PdfSync.*",
+      "PdfTools.*",
       "Print.*",
       "ProgressUpdateUI.*",
       "PreviewPipe.*",
@@ -1388,6 +1766,7 @@ const sumatraFiles: FileGroup[] = [
       "RegistryPreview.*",
       "RegistrySearchFilter.*",
       "SearchAndDDE.*",
+      "Screenshot.*",
       "Selection.*",
       "SettingsStructs.*",
       "SimpleBrowserWindow.*",
@@ -1400,6 +1779,7 @@ const sumatraFiles: FileGroup[] = [
       "SvgIcons.*",
       "TableOfContents.*",
       "Tabs.*",
+      "TabGroupsManage.*",
       "Tester.*",
       "Tests.cpp",
       "TextSearch.*",
@@ -1468,7 +1848,6 @@ const SYSTEM_LIBS = [
   "version",
   "windowscodecs",
   "wininet",
-  "uiautomationcore",
   "uxtheme",
   "wintrust",
   "crypt32",
@@ -1528,7 +1907,13 @@ async function buildLibrary(
   const defineFlags = allDefines.map((d) => `-D${d}`);
 
   // Build include flags
-  const includeFlags = lib.includes.map((d) => `-I${d}`);
+  const includeFlags = [mingwCompatIncludeDir(outDir), ...lib.includes].map((d) => `-I${d}`);
+  const forceIncludeFlags =
+    lib.name === "libarchive"
+      ? ["-include", join(mingwCompatIncludeDir(outDir), "MinGWCompat.h")]
+      : lib.name === "utils"
+        ? ["-include", join(mingwCompatIncludeDir(outDir), "MinGWAppCompat.h")]
+        : [];
 
   // Suppress warnings; GCC 14+ promotes some to errors even with -w
   const warnFlags = [
@@ -1556,7 +1941,7 @@ async function buildLibrary(
     units.push({
       src,
       obj,
-      args: [compiler, ...optFlags, ...defineFlags, ...includeFlags, ...warnFlags, ...langFlags, ...(lib.extraCflags ?? []), "-c", src, "-o", obj],
+      args: [compiler, ...optFlags, ...defineFlags, ...includeFlags, ...forceIncludeFlags, ...warnFlags, ...langFlags, ...(lib.extraCflags ?? []), "-c", src, "-o", obj],
     });
   }
 
@@ -1604,11 +1989,13 @@ async function buildSumatraExe(
   const defineFlags = allDefines.map((d) => `-D${d}`);
 
   const includes = [
+    mingwCompatIncludeDir(outDir),
     "src",
     "mupdf/include",
     "ext/synctex",
     "ext/libdjvu",
     "ext/CHMLib",
+    "ext/libarchive",
     "ext/darkmodelib/include",
     "ext/zlib",
     // WebView2 - may not exist for mingw builds
@@ -1618,6 +2005,7 @@ async function buildSumatraExe(
 
   // Use -Wno-* instead of -w to still see important errors
   const warnFlags = ["-w"];
+  const forceIncludeFlags = ["-include", join(mingwCompatIncludeDir(outDir), "MinGWAppCompat.h")];
 
   const units: { src: string; obj: string; args: string[] }[] = [];
   for (const src of sources) {
@@ -1635,7 +2023,7 @@ async function buildSumatraExe(
     units.push({
       src,
       obj,
-      args: [compiler, ...optFlags, ...defineFlags, ...includeFlags, ...warnFlags, ...langFlags, "-c", src, "-o", obj],
+      args: [compiler, ...optFlags, ...defineFlags, ...includeFlags, ...forceIncludeFlags, ...warnFlags, ...langFlags, "-c", src, "-o", obj],
     });
   }
 
@@ -1671,6 +2059,15 @@ namespace _com_util {
   }
   exeObjs.push(comUtilObj);
 
+  const murunStubSrc = join(outDir, "obj", "murun_stub.c");
+  const murunStubObj = join(outDir, "obj", "murun_stub.o");
+  await writeFile(murunStubSrc, "int murun_main(int argc, char **argv) { (void)argc; (void)argv; return 1; }\n");
+  const murunStubRes = await spawnCmd([CC, "-Os", "-c", murunStubSrc, "-o", murunStubObj]);
+  if (!murunStubRes.ok) {
+    throw new Error(`failed to compile murun stub: ${murunStubRes.stderr}`);
+  }
+  exeObjs.push(murunStubObj);
+
   // ── Embed font files ──────────────────────────────────────────────────
   console.log("Embedding font files...");
   const fontObjs: string[] = [];
@@ -1686,70 +2083,166 @@ namespace _com_util {
     fontObjs.push(obj);
   }
 
-  // ── Compile .rc resource file ─────────────────────────────────────────
+  // ── Compile .rc resource files ────────────────────────────────────────
   console.log("Compiling resources...");
-  const rcObj = join(outDir, "obj", "sumatrapdf", "SumatraPDF.res.o");
-  mkdirSync(dirname(rcObj), { recursive: true });
-  const rcObjAbsolute = join(process.cwd(), rcObj);
-  // Create a modified .rc with forward slashes (macOS windres can't handle backslashes)
   const rcOriginal = await readFile("src/SumatraPDF.rc", "utf-8");
-  const rcFixed = rcOriginal.replace(/\\\\/g, "/");
-  const rcTmpPath = join(outDir, "obj", "sumatrapdf", "SumatraPDF_mingw.rc");
-  await writeFile(rcTmpPath, rcFixed);
-  const rcTmpAbsolute = join(process.cwd(), rcTmpPath);
-  const rcRes = await spawnCmd([
-    WINDRES,
-    "-I",
-    ".",
-    "-D_WIN64",
-    ...defineFlags,
-    rcTmpAbsolute,
-    "-o",
-    rcObjAbsolute,
-  ], { cwd: "src" });
-  const rcObjs: string[] = [];
-  if (rcRes.ok) {
-    rcObjs.push(rcObj);
+  const generatedTranslations = join(outDir, "obj", "sumatrapdf", "translations.txt.lzsa");
+  const translationResource = existsSync("translations/translations.txt.lzsa")
+    ? "../translations/translations.txt.lzsa"
+    : `../${generatedTranslations}`;
+  if (!existsSync("translations/translations.txt.lzsa")) {
+    await writeEmptySimpleArchive(generatedTranslations);
+  }
+
+  async function compileResource(
+    name: string,
+    extraDefines: string[] = [],
+    installerPayloadPath?: string,
+  ): Promise<string[]> {
+    const rcObj = join(outDir, "obj", "sumatrapdf", `${name}.res.o`);
+    mkdirSync(dirname(rcObj), { recursive: true });
+    const rcObjAbsolute = join(process.cwd(), rcObj);
+    const rcTmpPath = join(outDir, "obj", "sumatrapdf", `${name}.rc`);
+    // Create a modified .rc with forward slashes (macOS windres can't handle backslashes)
+    // and point generated-only assets at the output directory.
+    const rcFixed = rcOriginal
+      .replace(/\\\\/g, "/")
+      .replace("../translations/translations.txt.lzsa", translationResource)
+      .replace("QM(INSTALL_PAYLOAD_ZIP)", installerPayloadPath ? `"${installerPayloadPath}"` : "QM(INSTALL_PAYLOAD_ZIP)");
+    await writeFile(rcTmpPath, rcFixed);
+    const rcTmpAbsolute = join(process.cwd(), rcTmpPath);
+    const rcRes = await spawnCmd([
+      WINDRES,
+      "-I",
+      ".",
+      "-D_WIN64",
+      ...defineFlags,
+      ...extraDefines,
+      rcTmpAbsolute,
+      "-o",
+      rcObjAbsolute,
+    ], { cwd: "src" });
+    if (rcRes.ok) {
+      return [rcObj];
+    }
+    console.error(`  WARNING: windres failed (${name} resource skipped): ${rcRes.stderr.slice(0, 200)}`);
+    return [];
+  }
+
+  const rcObjs = await compileResource("SumatraPDF_mingw");
+  if (rcObjs.length > 0) {
     console.log("  -> resources compiled");
-  } else {
-    console.error(`  WARNING: windres failed (resource file skipped): ${rcRes.stderr.slice(0, 200)}`);
+  }
+
+  const installerData = join(outDir, "InstallerData.dat");
+  await writeEmptySimpleArchive(installerData);
+  const setupRcObjs = await compileResource("SumatraPDF_mingw_setup", ["-DINSTALL_PAYLOAD_ZIP"], `../${installerData}`);
+  if (setupRcObjs.length === 0) {
+    throw new Error("failed to compile setup resources");
+  }
+  if (setupRcObjs.length > 0) {
+    console.log("  -> setup resources compiled");
   }
 
   // ── Link ──────────────────────────────────────────────────────────────
   console.log("Linking SumatraPDF.exe...");
   const exePath = join(outDir, "SumatraPDF.exe");
-  const linkArgs = [
-    CXX,
-    "-o",
-    exePath,
-    "-static",
-    "-static-libgcc",
-    "-static-libstdc++",
-    "-mwindows", // GUI app (WinMain entry point)
-    ...exeObjs,
-    ...rcObjs,
-    ...fontObjs,
-    // archives: order matters (dependents first)
-    ...archives,
-    // WebView2 import library (MSVC import lib, mingw can usually consume these)
-    "packages/Microsoft.Web.WebView2.1.0.992.28/build/native/x64/WebView2Loader.dll.lib",
-    // system libraries
-    ...SYSTEM_LIBS.map((l) => `-l${l}`),
-  ];
-  const linkRes = await spawnCmd(linkArgs);
-  if (!linkRes.ok) {
-    console.error("Link failed:");
-    console.error(linkRes.stderr.slice(0, 3000));
-    throw new Error("Linking failed");
+  const uiautomationDef = join(outDir, "obj", "uiautomationcore.def");
+  const uiautomationLib = join(outDir, "lib", "libuiautomationcore.a");
+  const bcryptDef = join(outDir, "obj", "bcrypt.def");
+  const bcryptLib = join(outDir, "lib", "libbcrypt.a");
+  const ncryptDef = join(outDir, "obj", "ncrypt.def");
+  const ncryptLib = join(outDir, "lib", "libncrypt.a");
+  await writeFile(
+    uiautomationDef,
+    `LIBRARY uiautomationcore.dll
+EXPORTS
+UiaReturnRawElementProvider
+UiaRaiseStructureChangedEvent
+UiaRaiseAutomationEvent
+UiaHostProviderFromHwnd
+UiaGetReservedNotSupportedValue
+`,
+  );
+  const uiautomationRes = await spawnCmd([DLLTOOL, "-d", uiautomationDef, "-l", uiautomationLib]);
+  if (!uiautomationRes.ok) {
+    throw new Error(`failed to create UIAutomation import library: ${uiautomationRes.stderr}`);
   }
-  console.log(`\n  => ${exePath}`);
+  await writeFile(
+    bcryptDef,
+    `LIBRARY bcrypt.dll
+EXPORTS
+BCryptOpenAlgorithmProvider
+BCryptGenRandom
+BCryptCloseAlgorithmProvider
+BCryptDestroyKey
+BCryptEncrypt
+BCryptGetProperty
+BCryptSetProperty
+BCryptGenerateSymmetricKey
+BCryptDeriveKeyPBKDF2
+BCryptFinishHash
+BCryptCreateHash
+BCryptHashData
+`,
+  );
+  const bcryptRes = await spawnCmd([DLLTOOL, "-d", bcryptDef, "-l", bcryptLib]);
+  if (!bcryptRes.ok) {
+    throw new Error(`failed to create BCrypt import library: ${bcryptRes.stderr}`);
+  }
+  await writeFile(
+    ncryptDef,
+    `LIBRARY ncrypt.dll
+EXPORTS
+NCryptFreeObject
+`,
+  );
+  const ncryptRes = await spawnCmd([DLLTOOL, "-d", ncryptDef, "-l", ncryptLib]);
+  if (!ncryptRes.ok) {
+    throw new Error(`failed to create NCrypt import library: ${ncryptRes.stderr}`);
+  }
+  async function linkExecutable(exePath: string, resourceObjs: string[]): Promise<void> {
+    const linkArgs = [
+      CXX,
+      "-o",
+      exePath,
+      "-static",
+      "-static-libgcc",
+      "-static-libstdc++",
+      "-mwindows", // GUI app (WinMain entry point)
+      "-Wl,--allow-multiple-definition",
+      ...exeObjs,
+      ...resourceObjs,
+      ...fontObjs,
+      // archives: order matters (dependents first)
+      ...archives,
+      // WebView2 import library (MSVC import lib, mingw can usually consume these)
+      "packages/Microsoft.Web.WebView2.1.0.992.28/build/native/x64/WebView2Loader.dll.lib",
+      uiautomationLib,
+      bcryptLib,
+      ncryptLib,
+      // system libraries
+      ...SYSTEM_LIBS.map((l) => `-l${l}`),
+    ];
+    const linkRes = await spawnCmd(linkArgs);
+    if (!linkRes.ok) {
+      console.error("Link failed:");
+      console.error(linkRes.stderr.slice(0, 12000));
+      throw new Error(`Linking failed for ${exePath}`);
+    }
+    console.log(`\n  => ${exePath}`);
+  }
+
+  await linkExecutable(exePath, rcObjs);
+  const setupExePath = join(outDir, "SumatraPDF-mingw-x64-install.exe");
+  await linkExecutable(setupExePath, setupRcObjs);
 }
 
 // ── Top-level build functions ───────────────────────────────────────────────
 
 // Order: libraries that have no deps first, then dependents.
 // The link order for archives is: most-dependent first, least-dependent last.
-const ALL_LIBS: LibDef[] = [zlib, unrar, libdjvu, chm, unarrlib, libwebp, dav1d, libheif, mupdfLibs, mupdf, utils];
+const ALL_LIBS: LibDef[] = [zlib, unrar, libdjvu, chm, libarchive, unarrlib, libwebp, dav1d, libheif, mupdfLibs, mupdf, utils];
 
 async function build(isRelease: boolean, clean: boolean): Promise<void> {
   const config = isRelease ? "release" : "debug";
@@ -1768,6 +2261,7 @@ async function build(isRelease: boolean, clean: boolean): Promise<void> {
 
   mkdirSync(join(outDir, "obj"), { recursive: true });
   mkdirSync(join(outDir, "lib"), { recursive: true });
+  await writeMingwCompatHeaders(outDir);
 
   // Build all static libraries
   const archives: string[] = [];
