@@ -1,7 +1,5 @@
 name: daily
 on:
-  schedule:
-    - cron: "0 1 * * *"
   repository_dispatch:
     types: [build-daily]
   workflow_dispatch:
