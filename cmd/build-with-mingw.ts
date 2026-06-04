@@ -2068,6 +2068,65 @@ namespace _com_util {
   }
   exeObjs.push(murunStubObj);
 
+  const webview2StubSrc = join(outDir, "obj", "webview2_dynamic_stub.cpp");
+  const webview2StubObj = join(outDir, "obj", "webview2_dynamic_stub.o");
+  await writeFile(webview2StubSrc, `
+#include <windows.h>
+#include "webview2.h"
+
+static HRESULT WebView2Unavailable() {
+  return HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
+}
+
+static HMODULE WebView2LoaderModule() {
+  static HMODULE mod = LoadLibraryW(L"WebView2Loader.dll");
+  return mod;
+}
+
+extern "C" HRESULT WINAPI CreateCoreWebView2EnvironmentWithOptions(
+  PCWSTR browserExecutableFolder,
+  PCWSTR userDataFolder,
+  ICoreWebView2EnvironmentOptions* environmentOptions,
+  ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler* environmentCreatedHandler) {
+  using Fn = HRESULT (WINAPI *)(PCWSTR, PCWSTR, ICoreWebView2EnvironmentOptions*, ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
+  HMODULE mod = WebView2LoaderModule();
+  if (!mod) return WebView2Unavailable();
+  auto fn = (Fn)GetProcAddress(mod, "CreateCoreWebView2EnvironmentWithOptions");
+  if (!fn) return WebView2Unavailable();
+  return fn(browserExecutableFolder, userDataFolder, environmentOptions, environmentCreatedHandler);
+}
+
+extern "C" HRESULT WINAPI GetAvailableCoreWebView2BrowserVersionString(
+  PCWSTR browserExecutableFolder,
+  LPWSTR* versionInfo) {
+  using Fn = HRESULT (WINAPI *)(PCWSTR, LPWSTR*);
+  HMODULE mod = WebView2LoaderModule();
+  if (!mod) return WebView2Unavailable();
+  auto fn = (Fn)GetProcAddress(mod, "GetAvailableCoreWebView2BrowserVersionString");
+  if (!fn) return WebView2Unavailable();
+  return fn(browserExecutableFolder, versionInfo);
+}
+`);
+  const webview2StubRes = await spawnCmd([
+    CXX,
+    "-Os",
+    ...defineFlags,
+    ...includeFlags,
+    ...forceIncludeFlags,
+    "-std=c++23",
+    "-fno-rtti",
+    "-fno-exceptions",
+    "-fpermissive",
+    "-c",
+    webview2StubSrc,
+    "-o",
+    webview2StubObj,
+  ]);
+  if (!webview2StubRes.ok) {
+    throw new Error(`failed to compile WebView2 dynamic stub: ${webview2StubRes.stderr}`);
+  }
+  exeObjs.push(webview2StubObj);
+
   // ── Embed font files ──────────────────────────────────────────────────
   console.log("Embedding font files...");
   const fontObjs: string[] = [];
@@ -2216,8 +2275,6 @@ NCryptFreeObject
       ...fontObjs,
       // archives: order matters (dependents first)
       ...archives,
-      // WebView2 import library (MSVC import lib, mingw can usually consume these)
-      "packages/Microsoft.Web.WebView2.1.0.992.28/build/native/x64/WebView2Loader.dll.lib",
       uiautomationLib,
       bcryptLib,
       ncryptLib,
